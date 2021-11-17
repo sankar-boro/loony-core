@@ -1,0 +1,14 @@
+[package]
+name = "loony-core"
+edition = "2021"
+version = "0.1.0"
+authors = ["Sankar boro <sankar.boro@yahoo.com>"]
+description = "a very basic future executor"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sankar-boro/loony-core"
+
+[dependencies]
+crossbeam = "0.7.1"
+num_cpus = "1.9.0"
+lazy_static = "1.2.0"
+futures = "0.3.17"
