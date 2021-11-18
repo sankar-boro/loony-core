@@ -64,6 +64,7 @@ use crossbeam::channel;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 
+
 #[cfg(test)]
 mod tests;
 mod threadpool;
@@ -164,6 +165,38 @@ impl Task {
         unsafe { task(future) }
     }
 
+    fn send(&self, data: Self) {
+        self.0.queue.tx.send(data).expect("Ooops! Failed to send data");
+    }
+
+    fn polling_repoll(&self) -> Result<usize, usize> {
+        self
+        .0
+        .status
+        .compare_exchange(POLLING, REPOLL, SeqCst, SeqCst)
+    }
+
+    fn waiting_repoll(&self) -> Result<usize, usize> {
+        self
+        .0
+        .status
+        .compare_exchange(WAITING, REPOLL, SeqCst, SeqCst)
+    }
+
+    fn waiting_polling(&self) -> Result<usize, usize> {
+        self
+        .0
+        .status
+        .compare_exchange(WAITING, POLLING, SeqCst, SeqCst)
+    }
+
+    fn polling_waiting(&self) -> Result<usize, usize> {
+        self
+        .0
+        .status
+        .compare_exchange(POLLING,WAITING, SeqCst, SeqCst)
+    }
+
     #[inline]
     unsafe fn poll(self) {
         self.0.status.store(POLLING, SeqCst);
@@ -173,10 +206,7 @@ impl Task {
             if let Poll::Ready(_) = (&mut *self.0.future.get()).poll_unpin(&mut cx) {
                 break self.0.status.store(COMPLETE, SeqCst);
             }
-            match self
-                .0
-                .status
-                .compare_exchange(POLLING, WAITING, SeqCst, SeqCst)
+            match self.polling_waiting()
             {
                 Ok(_) => break,
                 Err(_) => self.0.status.store(POLLING, SeqCst),
@@ -214,23 +244,17 @@ unsafe fn wake_raw(this: *const ()) {
     loop {
         match status {
             WAITING => {
-                match task
-                    .0
-                    .status
-                    .compare_exchange(WAITING, POLLING, SeqCst, SeqCst)
+                match task.waiting_repoll()
                 {
                     Ok(_) => {
-                        task.0.queue.tx.send(clone_task(&*task.0)).unwrap();
+                        task.send(clone_task(&*task.0));
                         break;
                     }
                     Err(cur) => status = cur,
                 }
             }
             POLLING => {
-                match task
-                    .0
-                    .status
-                    .compare_exchange(POLLING, REPOLL, SeqCst, SeqCst)
+                match task.polling_repoll()
                 {
                     Ok(_) => break,
                     Err(cur) => status = cur,
@@ -248,23 +272,17 @@ unsafe fn wake_ref_raw(this: *const ()) {
     loop {
         match status {
             WAITING => {
-                match task
-                    .0
-                    .status
-                    .compare_exchange(WAITING, POLLING, SeqCst, SeqCst)
+                match task.waiting_polling()
                 {
                     Ok(_) => {
-                        task.0.queue.tx.send(clone_task(&*task.0)).unwrap();
+                        task.send(clone_task(&*task.0));
                         break;
                     }
                     Err(cur) => status = cur,
                 }
             }
             POLLING => {
-                match task
-                    .0
-                    .status
-                    .compare_exchange(POLLING, REPOLL, SeqCst, SeqCst)
+                match task.polling_repoll()
                 {
                     Ok(_) => break,
                     Err(cur) => status = cur,
