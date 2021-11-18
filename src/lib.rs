@@ -155,6 +155,7 @@ impl Task {
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn new_boxed(future: BoxFuture<'static, ()>, queue: Arc<TaskQueue>) -> Task {
         let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
             queue,

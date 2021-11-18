@@ -73,6 +73,7 @@ impl ThreadPool {
 
     /// Spawn a boxed future on the threadpool.
     #[inline]
+    #[allow(dead_code)]
     pub fn spawn_boxed(&self, future: BoxFuture<'static, ()>) {
         self.queue
             .tx

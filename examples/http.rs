@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{Write};
 use futures::executor;
 
 use std::net::{TcpListener};
