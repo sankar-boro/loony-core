@@ -64,12 +64,16 @@ use crossbeam::channel;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 
-
 #[cfg(test)]
 mod tests;
 mod threadpool;
-
 use threadpool::THREAD_POOL;
+
+
+const WAITING: usize = 0; // --> POLLING
+const POLLING: usize = 1; // --> WAITING, REPOLL, or COMPLETE
+const REPOLL: usize = 2; // --> POLLING
+const COMPLETE: usize = 3; // No transitions out
 
 thread_local! {
     static QUEUE: RefCell<Weak<TaskQueue>> = RefCell::new(Weak::new());
@@ -137,19 +141,28 @@ impl fmt::Debug for AtomicFuture {
 unsafe impl Send for AtomicFuture {}
 unsafe impl Sync for AtomicFuture {}
 
-const WAITING: usize = 0; // --> POLLING
-const POLLING: usize = 1; // --> WAITING, REPOLL, or COMPLETE
-const REPOLL: usize = 2; // --> POLLING
-const COMPLETE: usize = 3; // No transitions out
+impl AtomicFuture {
+    fn from_basic<F: Future<Output = ()> + Send + 'static>(fut: F, queue: Arc<TaskQueue>) -> Arc<AtomicFuture> {
+        Arc::new(AtomicFuture {
+            queue,
+            status: AtomicUsize::new(WAITING),
+            future: UnsafeCell::new(fut.boxed()),
+        })
+    }
+
+    fn from_boxed(future: BoxFuture<'static, ()>, queue: Arc<TaskQueue>) -> Arc<AtomicFuture> {
+        Arc::new(AtomicFuture {
+            queue,
+            status: AtomicUsize::new(WAITING),
+            future: UnsafeCell::new(future),
+        })
+    }
+}
 
 impl Task {
     #[inline]
     fn new<F: Future<Output = ()> + Send + 'static>(future: F, queue: Arc<TaskQueue>) -> Task {
-        let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
-            queue,
-            status: AtomicUsize::new(WAITING),
-            future: UnsafeCell::new(future.boxed()),
-        });
+        let future = AtomicFuture::from_basic(future, queue);
         let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
         unsafe { task(future) }
     }
@@ -157,11 +170,7 @@ impl Task {
     #[inline]
     #[allow(dead_code)]
     fn new_boxed(future: BoxFuture<'static, ()>, queue: Arc<TaskQueue>) -> Task {
-        let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
-            queue,
-            status: AtomicUsize::new(WAITING),
-            future: UnsafeCell::new(future),
-        });
+        let future: Arc<AtomicFuture> = AtomicFuture::from_boxed(future, queue);
         let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
         unsafe { task(future) }
     }
@@ -198,19 +207,34 @@ impl Task {
         .compare_exchange(POLLING,WAITING, SeqCst, SeqCst)
     }
 
+    fn polling(&self) {
+        self.0.status.store(POLLING, SeqCst);
+    }
+
+    fn complete(&self) {
+        self.0.status.store(COMPLETE, SeqCst);
+    }
+
+    fn poll_task(&self, cx: &mut Context) -> Poll<()> {
+        unsafe {
+            (&mut *self.0.future.get()).poll_unpin(cx)
+        }
+    }
+
     #[inline]
     unsafe fn poll(self) {
-        self.0.status.store(POLLING, SeqCst);
+        self.polling();
         let waker = ManuallyDrop::new(waker(&*self.0));
         let mut cx = Context::from_waker(&waker);
         loop {
-            if let Poll::Ready(_) = (&mut *self.0.future.get()).poll_unpin(&mut cx) {
-                break self.0.status.store(COMPLETE, SeqCst);
+            // This is the part where our function gets executed
+            if let Poll::Ready(_) =  self.poll_task(&mut cx){
+                break self.complete();
             }
             match self.polling_waiting()
             {
                 Ok(_) => break,
-                Err(_) => self.0.status.store(POLLING, SeqCst),
+                Err(_) => self.polling(),
             }
         }
     }
