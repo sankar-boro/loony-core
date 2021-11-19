@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::Context;
+use std::task::{Context, Poll};
 use std::sync::mpsc::*;
 use threadpool::ThreadPool;
 
